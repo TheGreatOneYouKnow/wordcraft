@@ -588,8 +588,9 @@ impl AffixDict {
     /// Does `w` carry flag `bit` — as a stem, or as the form of a suffix rule whose
     /// continuation classes include `bit` (chained suffixation, depth-bounded)? `circumfix`, when
     /// given, is whether that outermost suffix must carry the `CIRCUMFIX` flag (it must match the
-    /// prefix being checked). As in Hunspell, a stem carrying the flag itself takes the prefix
-    /// with no suffix at all (Slovak `krajší/F` → `najkrajší`).
+    /// prefix being checked). Inside a pair the inner suffixes are free; otherwise none of them may
+    /// carry the flag either, since no prefix pairs with it. As in Hunspell, a stem carrying the
+    /// flag itself takes the prefix with no suffix at all (Slovak `krajší/F` → `najkrajší`).
     fn form_has_flag(&self, w: &str, bit: u128, depth: u8, excluded: u128, circumfix: Option<bool>) -> bool {
         if self.stem_flags_excluding(w, excluded).is_some_and(|f| f & bit != 0) {
             return true;
@@ -610,7 +611,7 @@ impl AffixDict {
                     if r.cont & bit != 0
                         && circumfix.is_none_or(|c| self.is_circumfix(r) == c)
                         && r.cond_matches(&root, true)
-                        && self.form_has_flag(&root, r.bit, depth - 1, excluded, None)
+                        && self.form_has_flag(&root, r.bit, depth - 1, excluded, if circumfix == Some(true) { None } else { Some(false) })
                     {
                         return true;
                     }
@@ -692,7 +693,9 @@ impl AffixDict {
                 }
                 // Continuation classes: `root` need not be a stem carrying this rule's flag —
                 // it may be a form that gained the flag from another rule's continuation.
-                if need == 0 && rules().any(|r| r.cond_matches(&root, true) && self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded, None)) {
+                if need == 0
+                    && rules().any(|r| r.cond_matches(&root, true) && self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded, Some(circumfix)))
+                {
                     return true;
                 }
             }
@@ -1029,6 +1032,15 @@ pub(crate) mod tests {
         let plain = AffixDict::from_hunspell(&CIRCUMFIX_AFF.replace("CIRCUMFIX X\n", ""), CIRCUMFIX_DIC, &[]).unwrap();
         assert!(plain.check("rýchlejšia") && plain.check("najrýchlejšie"));
         assert!(AffixDict::from_hunspell("CIRCUMFIX\n", "1\nslovo\n", &[]).is_err(), "CIRCUMFIX needs one flag");
+        // Chained suffixes: a circumfix suffix inside the chain needs its prefix too (as
+        // libhunspell answers for the same rules).
+        let aff = "CIRCUMFIX X\nPFX P Y 1\nPFX P 0 pre/X .\nSFX A Y 1\nSFX A 0 a/XBP .\nSFX B Y 1\nSFX B 0 b .\nSFX C Y 1\nSFX C 0 c/B .\n";
+        let d = AffixDict::from_hunspell(aff, "1\nroot/AC\n", &[]).unwrap();
+        for (w, ok) in
+            [("root", true), ("roota", false), ("rootab", false), ("preroota", true), ("prerootb", false), ("rootc", true), ("rootcb", true)]
+        {
+            assert_eq!(d.check(w), ok, "{w}");
+        }
     }
 
     #[test]
