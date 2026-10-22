@@ -779,6 +779,17 @@ impl AffixDict {
         &self.map
     }
 
+    /// Use `groups` (each a string of related letters, like `"aáä"`) as the `MAP` table when the
+    /// dictionary declares none; a dictionary's own table always wins. Some dictionaries only
+    /// list single-letter `REP` pairs, which restore one missing diacritic per suggestion, never
+    /// two (Slovak's: `pocitac` would never reach `počítač`).
+    pub fn with_default_map(mut self, groups: &[&str]) -> AffixDict {
+        if self.map.is_empty() {
+            self.map = groups.iter().map(|g| g.chars().collect::<Vec<char>>()).filter(|g| g.len() > 1).collect();
+        }
+        self
+    }
+
     /// The `REP` table: common misspellings, `(wrong, right)`.
     pub fn rep(&self) -> &[(String, String)] {
         &self.rep

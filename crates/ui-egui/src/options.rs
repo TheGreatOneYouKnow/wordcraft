@@ -381,6 +381,7 @@ fn language_name(lang: wordcraft_engine::proof::ProofLang) -> &'static str {
         ProofLang::Ru => tl!("Russian"),
         ProofLang::Cs => tl!("Czech"),
         ProofLang::Id => tl!("Indonesian"),
+        ProofLang::Sk => tl!("Slovak"),
         // English uses its bundled word list; Bulgarian and German have no dictionary yet.
         ProofLang::En | ProofLang::EnGb | ProofLang::EnCa | ProofLang::Bg | ProofLang::De | ProofLang::Other => "",
     }

@@ -34,6 +34,9 @@
 //! - **Indonesian** ([`ProofLang::Id`], module [`id`]): the installed Hunspell `id_ID`
 //!   dictionary (not bundled), dictionary-driven suggestions and generic checks with Indonesian
 //!   messages. Hyphenation uses the existing English fallback.
+//! - **Slovak** ([`ProofLang::Sk`], module [`sk`]): the installed Hunspell `sk_SK` dictionary
+//!   (not bundled), dictionary-driven suggestions and generic checks with Slovak messages.
+//!   Hyphenation uses the existing English fallback.
 //! - **German** ([`ProofLang::De`]): hyphenation by `hyph-utf8`'s German patterns (reformed
 //!   spelling, MIT); no spelling or grammar marks yet.
 //! - **Other languages** ([`ProofLang::Other`]): no spelling or grammar marks, like Word without
@@ -59,6 +62,7 @@ pub mod patterns;
 pub mod pl;
 pub mod pt;
 pub mod ru;
+pub mod sk;
 pub mod tr;
 pub mod vi;
 
@@ -156,6 +160,7 @@ pub fn set_dictionaries_folder(dir: Option<std::path::PathBuf>) {
     ru::reload_dictionary();
     cs::reload_dictionary();
     id::reload_dictionary();
+    sk::reload_dictionary();
     DICTIONARY_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -171,6 +176,7 @@ pub fn installed_dictionaries() -> Vec<(ProofLang, Option<std::path::PathBuf>)> 
         (ProofLang::Ru, ru::installed_path()),
         (ProofLang::Cs, cs::installed_path()),
         (ProofLang::Id, id::installed_path()),
+        (ProofLang::Sk, sk::installed_path()),
     ]
 }
 
@@ -185,6 +191,7 @@ pub fn dictionary_load_error(lang: ProofLang) -> Option<String> {
         ProofLang::Hr => "hr_HR",
         ProofLang::Tr => "tr_TR",
         ProofLang::Id => "id_ID",
+        ProofLang::Sk => "sk_SK",
         _ => return None,
     };
     hunspell::load_error(key).map(|(_, reason)| reason)
@@ -704,6 +711,7 @@ fn spelling_issue(text: &str, a: usize, b: usize, lang: ProofLang, opts: &Option
         ProofLang::Ru => "Возможна орфографическая ошибка",
         ProofLang::Cs => "Možná pravopisná chyba",
         ProofLang::Id => "Kemungkinan salah eja",
+        ProofLang::Sk => "Možná pravopisná chyba",
         _ => "Possible spelling mistake",
     };
     Some(Issue { start: a, end: b, kind: IssueKind::Spelling, message: message.into(), suggestions: Vec::new(), lang })
@@ -726,6 +734,7 @@ pub fn is_correct_in_with(word: &str, lang: ProofLang, opts: &Options) -> bool {
         ProofLang::Ru => accepted_by_options(word, opts) || ru::is_correct(word),
         ProofLang::Cs => accepted_by_options(word, opts) || cs::is_correct(word),
         ProofLang::Id => accepted_by_options(word, opts) || id::is_correct(word),
+        ProofLang::Sk => accepted_by_options(word, opts) || sk::is_correct(word),
         ProofLang::Bg | ProofLang::De | ProofLang::Other => true,
     }
 }
@@ -742,13 +751,14 @@ pub fn suggest_in(word: &str, max: usize, lang: ProofLang) -> Vec<String> {
         ProofLang::Ru => ru::suggest(word, max),
         ProofLang::Cs => cs::suggest(word, max),
         ProofLang::Id => id::suggest(word, max),
+        ProofLang::Sk => sk::suggest(word, max),
         ProofLang::Bg | ProofLang::De | ProofLang::Other => Vec::new(),
     }
 }
 
 /// Grammar issues in a paragraph of text in `lang`: the English rules, the Polish ones
 /// ([`pl::grammar`]), the Portuguese ones ([`pt::grammar`]), the Italian ones ([`it::grammar`]),
-/// the Turkish ones ([`tr::grammar`]), Czech and Indonesian generic checks ([`cs::grammar`], [`id::grammar`]), or none for a language WordCraft doesn't proof.
+/// the Turkish ones ([`tr::grammar`]), Czech, Indonesian and Slovak generic checks ([`cs::grammar`], [`id::grammar`], [`sk::grammar`]), or none for a language WordCraft doesn't proof.
 pub fn check_grammar_in(text: &str, lang: ProofLang) -> Vec<Issue> {
     grammar_in(text, lang, true)
 }
@@ -768,6 +778,7 @@ fn grammar_in(text: &str, lang: ProofLang, capital_first: bool) -> Vec<Issue> {
         // Czech has no sentence-capital rule, so a list item needs no exception.
         ProofLang::Cs => cs::grammar::check(text),
         ProofLang::Id => id::grammar::check(text),
+        ProofLang::Sk => sk::grammar::check(text),
         ProofLang::Bg | ProofLang::De | ProofLang::Other => Vec::new(),
     }
 }
@@ -986,6 +997,7 @@ mod tests {
             ("ru_RU", ru::test_dict::AFF, ru::test_dict::DIC),
             ("cs_CZ", cs::test_dict::AFF, cs::test_dict::DIC),
             ("id_ID", id::test_dict::AFF, id::test_dict::DIC),
+            ("sk_SK", sk::test_dict::AFF, sk::test_dict::DIC),
         ] {
             std::fs::write(dir.join(format!("{name}.aff")), aff).unwrap();
             std::fs::write(dir.join(format!("{name}.dic")), dic).unwrap();
@@ -1001,7 +1013,10 @@ mod tests {
         // Turkish has no test dictionary to put in the folder; Indonesian is listed after it.
         let found = installed_dictionaries();
         assert_eq!(found.get(4).map(|(lang, _)| *lang), Some(ProofLang::Tr));
-        assert_eq!(found.last(), Some(&(ProofLang::Id, Some(dir.join("id_ID.dic")))));
+        assert_eq!(found.get(7), Some(&(ProofLang::Id, Some(dir.join("id_ID.dic")))));
+        // Slovak is listed last; like Russian and Czech, its own tests install a dictionary
+        // directly, concurrently, so only the language is asserted here.
+        assert_eq!(found.last().map(|(lang, _)| *lang), Some(ProofLang::Sk));
         assert_eq!(
             found[..4],
             [
@@ -1684,7 +1699,7 @@ mod tests {
             let _ = has_dictionary(Some(&s));
             let _ = is_correct_for(&s, Some(&s));
             let _ = hyphen::hyphen_points(&s, &hyphen::Limits::default());
-            for lang in [ProofLang::En, ProofLang::EnGb, ProofLang::EnCa, ProofLang::Pl, ProofLang::Pt, ProofLang::It, ProofLang::Hr, ProofLang::Tr, ProofLang::Ru, ProofLang::Cs, ProofLang::Id, ProofLang::De, ProofLang::Other] {
+            for lang in [ProofLang::En, ProofLang::EnGb, ProofLang::EnCa, ProofLang::Pl, ProofLang::Pt, ProofLang::It, ProofLang::Hr, ProofLang::Tr, ProofLang::Ru, ProofLang::Cs, ProofLang::Id, ProofLang::Sk, ProofLang::De, ProofLang::Other] {
                 let _ = check_spelling_in(&s, lang);
                 let _ = check_grammar_in(&s, lang);
                 let _ = is_correct_in(&s, lang);
@@ -1728,8 +1743,15 @@ mod tests {
         }
 
         #[test]
-        fn mixed_spans_never_panic(s in "\\PC{0,60}", cuts in proptest::collection::vec((0usize..80, 0usize..80, 0u8..11), 0..6)) {
-            let langs = [ProofLang::En, ProofLang::EnGb, ProofLang::EnCa, ProofLang::Pl, ProofLang::Pt, ProofLang::It, ProofLang::Tr, ProofLang::Ru, ProofLang::Cs, ProofLang::Id, ProofLang::Other];
+        fn slovak_suggestions_never_panic(s in "[a-záäčďéíĺľňóôŕšťúýžA-ZÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ'’ -]{0,14}") {
+            sk::test_dict::install();
+            let _ = suggest_in(&s, 4, ProofLang::Sk);
+            let _ = is_correct_in(&s, ProofLang::Sk);
+        }
+
+        #[test]
+        fn mixed_spans_never_panic(s in "\\PC{0,60}", cuts in proptest::collection::vec((0usize..80, 0usize..80, 0u8..12), 0..6)) {
+            let langs = [ProofLang::En, ProofLang::EnGb, ProofLang::EnCa, ProofLang::Pl, ProofLang::Pt, ProofLang::It, ProofLang::Tr, ProofLang::Ru, ProofLang::Cs, ProofLang::Id, ProofLang::Sk, ProofLang::Other];
             let spans: Vec<(Range<usize>, ProofLang)> = cuts.iter().map(|&(a, b, l)| (a.min(b)..a.max(b), langs[l as usize % langs.len()])).collect();
             for i in check_text(&s, &spans) {
                 proptest::prop_assert!(i.start <= i.end && i.end <= s.len());

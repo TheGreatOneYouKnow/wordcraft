@@ -1,8 +1,8 @@
 # Installing spelling dictionaries
 
-> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-18 · **Change:** trivial (ISO 8859-1 dictionaries are read, #2824; previously major: first version)
+> **Last reviewed:** 2026-10-16 · **Last updated:** 2026-10-22 · **Change:** trivial (Slovak `sk_SK`; previously trivial: ISO 8859-1 dictionaries are read, #2824; previously major: first version)
 
-English spelling works out of the box. Polish, Russian, Portuguese, Czech, Italian, Croatian and
+English spelling works out of the box. Polish, Russian, Portuguese, Czech, Slovak, Italian, Croatian and
 Turkish spelling use a standard **Hunspell** dictionary (an `.aff` and a `.dic` file) that
 WordCraft reads at runtime. These dictionaries are not bundled: they are large, and several are
 GPL or LGPL licensed. Without one, the language isn't checked. The status bar then shows the
@@ -26,6 +26,7 @@ WordCraft looks for the first of these file names (each name means a `<name>.aff
 | Russian | `ru_RU`, `ru-RU`, `ru` | LibreOffice `dict-ru` |
 | Portuguese (Brazil and Portugal) | `pt_BR`, `pt-BR`, `pt` | VERO (LibreOffice `dict-pt-BR`) |
 | Czech | `cs_CZ`, `cs-CZ`, `cs` | LibreOffice `dict-cs` |
+| Slovak | `sk_SK`, `sk-SK`, `sk` | LibreOffice `dict-sk`, Debian/Ubuntu `hunspell-sk` |
 | Italian | `it_IT`, `it_CH`, `it-IT`, `it` | LibreOffice `dict-it` |
 | Croatian | `hr_HR`, `hr-HR`, `hr` | LibreOffice `dict-hr` |
 | Turkish | `tr_TR`, `tr-TR`, `tr` | LibreOffice `dict-tr` |
@@ -127,6 +128,7 @@ Never commit dictionary files to this repository: they stay on the user's system
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-22 | trivial | Slovak: the `sk_SK` file names and sources |
 | 2026-10-18 | trivial | ISO 8859-1 (`SET ISO8859-1`) dictionaries are read, so the original VERO `pt_BR` works without converting it to UTF-8 (#2824) |
 | 2026-10-18 | minor | An installed dictionary that can't be read shows **(dictionary unreadable)** in the status bar, with the file and reason in its tooltip and in File › Options › Proofing (#2830) |
 | 2026-10-16 | major | First version: the file names per language, the search order and folders on Windows, macOS and Linux, installing `pt_BR` on each, and how to check it works |
