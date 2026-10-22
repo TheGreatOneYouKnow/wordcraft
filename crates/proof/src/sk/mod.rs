@@ -1,8 +1,10 @@
 //! Slovak proofing using the installed Hunspell `sk_SK` dictionary (never bundled; Debian and
 //! Ubuntu ship it as `hunspell-sk`, LibreOffice as its `dict-sk` extension). Suggestions use the
 //! dictionary's own MAP/REP/TRY/KEY tables through the ranking Czech uses
-//! ([`crate::cs::suggest`]). Grammar is limited to the generic repeated-word and spacing checks,
-//! with Slovak messages; hyphenation keeps the English fallback (no Slovak patterns are bundled).
+//! ([`crate::cs::suggest`]). The current sk-spell dictionary marks its `naj…ší` superlatives with
+//! `CIRCUMFIX`, which the affix engine reads ([`crate::affix`]). Grammar is limited to the
+//! generic repeated-word and spacing checks, with Slovak messages; hyphenation keeps the English
+//! fallback (no Slovak patterns are bundled).
 
 pub mod grammar;
 mod suggest;
@@ -123,8 +125,10 @@ pub fn is_correct_with(d: &AffixDict, word: &str) -> bool {
     if !w.chars().any(is_latin_letter) {
         return true; // other scripts: no dictionary
     }
+    // A hyphenated word is right as a whole (the dictionary lists `bielo-čierny` and its
+    // forms, `najbielo-čiernejší`) or part by part (`slovensko-anglický`), as Hunspell checks it.
     if w.contains('-') {
-        return w.split('-').all(|p| p.chars().count() <= 1 || known(d, p));
+        return known(d, w) || w.split('-').all(|p| p.chars().count() <= 1 || known(d, p));
     }
     known(d, w)
 }
@@ -159,7 +163,7 @@ mod tests {
         test_dict::install();
         let d = dictionary();
         assert!(has_dictionary());
-        assert_eq!(d.len(), 25);
+        assert_eq!(d.len(), 26);
         for w in [
             "mesto",
             "mesta",
@@ -194,10 +198,13 @@ mod tests {
             "chlieb",
             "móda",
             "škola-počítač",
+            // A hyphenated stem whose parts aren't words on their own.
+            "bielo-čierny",
         ] {
             assert!(is_correct(w), "{w}");
         }
-        for w in ["mestoo", "rychly", "bratislava", "pocitac", "dakujeme", "kon", "maso", "dlžka", "vrba", "mÄso", "škola-pocitac"] {
+        for w in ["mestoo", "rychly", "bratislava", "pocitac", "dakujeme", "kon", "maso", "dlžka", "vrba", "mÄso", "škola-pocitac", "bielo-čiernyy"]
+        {
             assert!(!is_correct(w), "{w}");
         }
         // Every letter of the Slovak alphabet with a diacritic is in the fixture.

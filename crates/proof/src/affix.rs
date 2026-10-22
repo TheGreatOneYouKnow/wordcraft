@@ -36,7 +36,6 @@ const UNSUPPORTED: &[&str] = &[
     "AF",
     "AM",
     "CHECKSHARPS",
-    "CIRCUMFIX",
     "COMPLEXPREFIXES",
     "COMPOUNDBEGIN",
     "COMPOUNDEND",
@@ -174,6 +173,9 @@ pub struct AffixDict {
     forbidden: u128,
     /// Stems with NOSUGGEST are correct, but none of their forms are suggested.
     no_suggest: u128,
+    /// The `CIRCUMFIX` flag's bit: affixes carrying it in their continuation classes are only
+    /// valid together, a prefix and a suffix that both carry it (Slovak `naj…ší`); 0: none declared.
+    circumfix: u128,
     /// Open-addressing hash table of stem indices (`EMPTY` = free).
     table: Vec<u32>,
     /// Flag char of each bit.
@@ -256,6 +258,7 @@ struct Rules {
     /// The `FORBIDDENWORD` flag: stems carrying it are listed but never correct.
     forbidden: Option<char>,
     no_suggest: Option<char>,
+    circumfix: Option<char>,
 }
 
 /// A rule as parsed from text, before flags become bits: `(flag, cross, strip, add, cont, cond)`.
@@ -294,16 +297,14 @@ fn parse_aff(aff: &str) -> Result<Rules, String> {
                     return Err(format!("line {}: FLAG {} is not supported (one-character flags only)", n + 1, at(1)));
                 }
             }
-            directive @ ("FORBIDDENWORD" | "NOSUGGEST") => {
+            directive @ ("FORBIDDENWORD" | "NOSUGGEST" | "CIRCUMFIX") => {
                 let mut it = at(1).chars().filter(|&c| c != EMOJI_SELECTOR);
                 match (it.next(), it.next()) {
-                    (Some(c), None) if !c.is_whitespace() => {
-                        if directive == "FORBIDDENWORD" {
-                            r.forbidden = Some(c);
-                        } else {
-                            r.no_suggest = Some(c);
-                        }
-                    }
+                    (Some(c), None) if !c.is_whitespace() => match directive {
+                        "FORBIDDENWORD" => r.forbidden = Some(c),
+                        "NOSUGGEST" => r.no_suggest = Some(c),
+                        _ => r.circumfix = Some(c),
+                    },
                     _ => return Err(format!("line {}: {directive} needs one flag character", n + 1)),
                 }
             }
@@ -406,6 +407,8 @@ impl AffixDict {
         // Flags: every one a rule or a stem uses gets a bit.
         let mut flag_chars: Vec<char> = rules.prefixes.iter().chain(&rules.suffixes).map(|r| r.0).collect();
         flag_chars.extend(stems.iter().flat_map(|s| s.1.chars()));
+        // The CIRCUMFIX flag usually appears only in continuation classes: it needs a bit too.
+        flag_chars.extend(rules.circumfix);
         flag_chars.sort_unstable();
         flag_chars.dedup();
         if flag_chars.len() > 128 {
@@ -421,6 +424,7 @@ impl AffixDict {
             flag_chars: flag_chars.clone(),
             forbidden,
             no_suggest: rules.no_suggest.map_or(0, bit_of),
+            circumfix: rules.circumfix.map_or(0, bit_of),
             try_chars: rules.try_chars,
             key: rules.key,
             map: rules.map,
@@ -576,9 +580,17 @@ impl AffixDict {
         None
     }
 
+    /// Does rule `r` carry the `CIRCUMFIX` flag (always false without one declared)?
+    fn is_circumfix(&self, r: &Rule) -> bool {
+        r.cont & self.circumfix != 0
+    }
+
     /// Does `w` carry flag `bit` — as a stem, or as the form of a suffix rule whose
-    /// continuation classes include `bit` (chained suffixation, depth-bounded)?
-    fn form_has_flag(&self, w: &str, bit: u128, depth: u8, excluded: u128) -> bool {
+    /// continuation classes include `bit` (chained suffixation, depth-bounded)? `circumfix`, when
+    /// given, is whether that outermost suffix must carry the `CIRCUMFIX` flag (it must match the
+    /// prefix being checked). As in Hunspell, a stem carrying the flag itself takes the prefix
+    /// with no suffix at all (Slovak `krajší/F` → `najkrajší`).
+    fn form_has_flag(&self, w: &str, bit: u128, depth: u8, excluded: u128, circumfix: Option<bool>) -> bool {
         if self.stem_flags_excluding(w, excluded).is_some_and(|f| f & bit != 0) {
             return true;
         }
@@ -595,7 +607,11 @@ impl AffixDict {
                 root.push_str(base);
                 root.push_str(&g.strip);
                 for r in g.rules.iter().filter_map(|&i| self.suffixes.get(i as usize)) {
-                    if r.cont & bit != 0 && r.cond_matches(&root, true) && self.form_has_flag(&root, r.bit, depth - 1, excluded) {
+                    if r.cont & bit != 0
+                        && circumfix.is_none_or(|c| self.is_circumfix(r) == c)
+                        && r.cond_matches(&root, true)
+                        && self.form_has_flag(&root, r.bit, depth - 1, excluded, None)
+                    {
                         return true;
                     }
                 }
@@ -618,7 +634,8 @@ impl AffixDict {
         if w.is_empty() || w.len() > MAX_WORD_BYTES {
             return false;
         }
-        if self.stem_flags_excluding(w, excluded).is_some() || self.suffixed(w, 0, excluded) {
+        // Without a prefix, no circumfix suffix: those only come with a circumfix prefix.
+        if self.stem_flags_excluding(w, excluded).is_some() || self.suffixed(w, 0, excluded, false) {
             return true;
         }
         let mut root = String::with_capacity(w.len() + 8);
@@ -633,13 +650,16 @@ impl AffixDict {
             if !r.cond_matches(&root, false) {
                 continue;
             }
+            // CIRCUMFIX: a prefix carrying it needs a suffix carrying it, and the reverse; as in
+            // Hunspell, that pairing applies only when a suffix is involved.
+            let circumfix = self.is_circumfix(r);
             if self.stem_flags_excluding(&root, excluded).is_some_and(|f| f & r.bit != 0) {
                 return true;
             }
-            if self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded) {
+            if self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded, Some(circumfix)) {
                 return true;
             }
-            if r.cross && self.suffixed(&root, r.bit, excluded) {
+            if r.cross && self.suffixed(&root, r.bit, excluded, circumfix) {
                 return true;
             }
         }
@@ -647,8 +667,9 @@ impl AffixDict {
     }
 
     /// Is `w` a stem with one suffix? With `need` set (a prefix was taken off), the stem must
-    /// carry those flags too and the suffix must allow cross products.
-    fn suffixed(&self, w: &str, need: u128, excluded: u128) -> bool {
+    /// carry those flags too and the suffix must allow cross products. `circumfix` is whether the
+    /// suffix must carry the `CIRCUMFIX` flag (exactly when the prefix taken off does).
+    fn suffixed(&self, w: &str, need: u128, excluded: u128, circumfix: bool) -> bool {
         let mut root = String::with_capacity(w.len() + 8);
         // Each split point from the end: the appended string is `w[b..]`, at most the longest
         // suffix, and something must stay before it.
@@ -660,7 +681,7 @@ impl AffixDict {
                 root.clear();
                 root.push_str(base);
                 root.push_str(&g.strip);
-                let rules = || g.rules.iter().filter_map(|&i| self.suffixes.get(i as usize));
+                let rules = || g.rules.iter().filter_map(|&i| self.suffixes.get(i as usize)).filter(|r| self.is_circumfix(r) == circumfix);
                 // The stem path: `root` is a stem carrying the rule's flag (and the prefix's,
                 // when a cross product is being checked).
                 if let Some(f) = self.stem_flags_excluding(&root, excluded)
@@ -671,7 +692,7 @@ impl AffixDict {
                 }
                 // Continuation classes: `root` need not be a stem carrying this rule's flag —
                 // it may be a form that gained the flag from another rule's continuation.
-                if need == 0 && rules().any(|r| r.cond_matches(&root, true) && self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded)) {
+                if need == 0 && rules().any(|r| r.cond_matches(&root, true) && self.form_has_flag(&root, r.bit, INNER_CHAIN, excluded, None)) {
                     return true;
                 }
             }
@@ -712,8 +733,9 @@ impl AffixDict {
         let mut cross_sfx = Vec::new();
         // Suffix forms queued with the continuation classes they carry, for chained expansion.
         let mut chain: Vec<(String, u128)> = Vec::new();
+        // Circumfix affixes are only words together, which this expansion doesn't build.
         for r in &self.suffixes {
-            if f & r.bit == 0 || !r.cond_matches(stem, true) {
+            if f & r.bit == 0 || self.is_circumfix(r) || !r.cond_matches(stem, true) {
                 continue;
             }
             let Some(base) = stem.strip_suffix(&*r.strip) else { continue };
@@ -735,7 +757,7 @@ impl AffixDict {
             }
             for (form, flags) in level {
                 for r in &self.suffixes {
-                    if flags & r.bit == 0 || !r.cond_matches(&form, true) {
+                    if flags & r.bit == 0 || self.is_circumfix(r) || !r.cond_matches(&form, true) {
                         continue;
                     }
                     let Some(base) = form.strip_suffix(&*r.strip) else { continue };
@@ -748,7 +770,7 @@ impl AffixDict {
             }
         }
         for r in &self.prefixes {
-            if f & r.bit == 0 || !r.cond_matches(stem, false) {
+            if f & r.bit == 0 || self.is_circumfix(r) || !r.cond_matches(stem, false) {
                 continue;
             }
             let Some(rest) = stem.strip_prefix(&*r.strip) else { continue };
@@ -825,7 +847,7 @@ impl AffixDict {
         for (a, b) in &self.rep {
             out.push_str(&format!("REP {} {}\n", a.replace(' ', "_"), b.replace(' ', "_")));
         }
-        for (directive, mask) in [("FORBIDDENWORD", self.forbidden), ("NOSUGGEST", self.no_suggest)] {
+        for (directive, mask) in [("FORBIDDENWORD", self.forbidden), ("NOSUGGEST", self.no_suggest), ("CIRCUMFIX", self.circumfix)] {
             if mask != 0
                 && let Some(c) = self.flag_char(mask)
             {
@@ -890,16 +912,14 @@ impl AffixDict {
                 "KEY" => rules.key = at(1).to_string(),
                 "MAP" => rules.map.push(at(1).chars().collect()),
                 "REP" => rules.rep.push((at(1).replace('_', " "), at(2).replace('_', " "))),
-                directive @ ("FORBIDDENWORD" | "NOSUGGEST") => {
+                directive @ ("FORBIDDENWORD" | "NOSUGGEST" | "CIRCUMFIX") => {
                     let mut it = at(1).chars();
                     match (it.next(), it.next()) {
-                        (Some(c), None) if !c.is_whitespace() => {
-                            if directive == "FORBIDDENWORD" {
-                                rules.forbidden = Some(c);
-                            } else {
-                                rules.no_suggest = Some(c);
-                            }
-                        }
+                        (Some(c), None) if !c.is_whitespace() => match directive {
+                            "FORBIDDENWORD" => rules.forbidden = Some(c),
+                            "NOSUGGEST" => rules.no_suggest = Some(c),
+                            _ => rules.circumfix = Some(c),
+                        },
                         _ => return Err(format!("affix dictionary: bad {directive} in `{line}`")),
                     }
                 }
@@ -964,6 +984,51 @@ pub(crate) mod tests {
 
     fn dict() -> AffixDict {
         AffixDict::from_hunspell(AFF, DIC, &["test data"]).unwrap()
+    }
+
+    /// Synthetic Slovak-like superlatives: `naj-` (F) carries the CIRCUMFIX flag X, so it is only
+    /// a word with a suffix carrying X too (`-ejšia`, only valid inside the pair), or on a stem that
+    /// carries F itself (`krajší`). `-ejší` exists twice: plain, and paired.
+    const CIRCUMFIX_AFF: &str = "SET UTF-8\nCIRCUMFIX X\nPFX N Y 1\nPFX N 0 ne .\nPFX F Y 1\nPFX F 0 naj/X .\n\
+        SFX Y Y 4\nSFX Y y ejší y\nSFX Y y ejší/FX y\nSFX Y y ejšia/FX y\nSFX Y y ejšie/F y\n";
+    const CIRCUMFIX_DIC: &str = "2\nrýchly/YN\nkrajší/F\n";
+
+    /// CIRCUMFIX (#3806: the current Slovak dictionary uses it and was refused): affixes carrying
+    /// the flag are words only together, as in Hunspell.
+    #[test]
+    fn circumfix_affixes_are_words_only_together() {
+        let d = AffixDict::from_hunspell(CIRCUMFIX_AFF, CIRCUMFIX_DIC, &[]).unwrap();
+        for w in ["rýchly", "nerýchly", "rýchlejší", "najrýchlejší", "najrýchlejšia", "rýchlejšie", "krajší", "najkrajší", "Najrýchlejší"]
+        {
+            assert!(d.check(w), "{w}");
+        }
+        for w in [
+            "najrýchly",     // a circumfix prefix needs a circumfix suffix…
+            "rýchlejšia",    // …and a circumfix suffix a circumfix prefix
+            "najrýchlejšie", // the suffix licenses `naj-` but doesn't carry the flag
+            "nerýchlejšia",  // a plain prefix with a circumfix suffix
+            "naj",
+        ] {
+            assert!(!d.check(w), "{w}");
+        }
+        // Forms list only words that stand on their own (no unpaired halves).
+        let mut forms = d.forms("rýchly");
+        forms.sort();
+        forms.dedup();
+        assert_eq!(forms, ["nerýchlejšie", "nerýchlejší", "nerýchly", "rýchlejšie", "rýchlejší", "rýchly"]);
+        for stem in ["rýchly", "krajší"] {
+            for f in d.forms(stem) {
+                assert!(d.check(&f), "{stem} → {f}");
+            }
+        }
+        // The compact format keeps the flag.
+        let back = AffixDict::from_bytes(&d.to_bytes()).unwrap();
+        assert!(back.check("najrýchlejšia") && !back.check("rýchlejšia") && !back.check("najrýchly"));
+        // A dictionary without CIRCUMFIX is unchanged: the flag is then an ordinary
+        // continuation class, so the halves are words.
+        let plain = AffixDict::from_hunspell(&CIRCUMFIX_AFF.replace("CIRCUMFIX X\n", ""), CIRCUMFIX_DIC, &[]).unwrap();
+        assert!(plain.check("rýchlejšia") && plain.check("najrýchlejšie"));
+        assert!(AffixDict::from_hunspell("CIRCUMFIX\n", "1\nslovo\n", &[]).is_err(), "CIRCUMFIX needs one flag");
     }
 
     #[test]

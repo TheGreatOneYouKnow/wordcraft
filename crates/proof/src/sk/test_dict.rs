@@ -44,7 +44,7 @@ PFX X Y 1
 PFX X 0 ne .
 ";
 
-pub const DIC: &str = "25
+pub const DIC: &str = "26
 mesto/A
 žena/Z
 rýchl/RX
@@ -65,6 +65,7 @@ dzbán
 džús
 chlieb
 móda
+bielo-čierny
 nie
 je
 sa
